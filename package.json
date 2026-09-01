@@ -7,7 +7,7 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "perft": "node --test test/perft.test.js",
-    "serve": "python3 -m http.server 8000",
+    "serve": "node scripts/serve.js",
     "bench": "node bench/bench.js",
     "bench:quick": "node bench/bench.js --quick"
   },

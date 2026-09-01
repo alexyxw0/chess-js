@@ -4,8 +4,15 @@ Chess in the browser: full rules on a canvas, and an alpha-beta engine to play
 against. No libraries, no build step, no dependencies — `npm test` runs on
 Node's built-in test runner and nothing else.
 
-**[▶ Play it](https://alexyxw0.github.io/chess-js/)** · or clone and open
-`index.html`.
+**[▶ Play it](https://alexyxw0.github.io/chess-js/)** · or clone and run:
+
+```bash
+npm run serve      # prints the URL; walks past a busy port instead of failing
+```
+
+Opening `index.html` straight off disk will not work — the engine is loaded as
+an ES module, and browsers refuse module imports over `file://`. It needs to be
+served over http, which is all `npm run serve` does.
 
 ```
 node --test test/*.test.js      # 46 tests, including 6 perft positions
