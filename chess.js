@@ -750,13 +750,8 @@ class Board {
         this.whiteKing.alert();
       else
         this.blackKing.alert();
-      if (moves.length == 0) {
-        console.log('asd');
-        ctx.font = "30px Arial";
-        ctx.fillStyle = "black";
-        ctx.textAlign = "center";
-        ctx.fillText('Checkmate!', 1000, 400);
-      }
+      // Checkmate and stalemate are reported by the panel's turn indicator,
+      // which is why the canvas no longer needs to be wider than the board.
     }
     else {
       if (this.whiteKing.isAlerted())

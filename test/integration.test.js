@@ -24,8 +24,8 @@ function loadGame() {
     document: {
       getElementById: () => ({
         getContext: () => noop, addEventListener() {},
-        width: 1200, height: 800,
-        getBoundingClientRect: () => ({ left: 0, top: 0, width: 1200, height: 800 }),
+        width: 800, height: 800,
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 800 }),
       }),
       addEventListener() {},
       activeElement: null,
@@ -101,7 +101,7 @@ function boardWithCanvas(rect) {
   const noop = new Proxy(() => {}, { get: () => noop, apply: () => undefined });
   const canvas = {
     getContext: () => noop, addEventListener() {},
-    width: 1200, height: 800,
+    width: 800, height: 800,
     getBoundingClientRect: () => rect,
   };
   const context = vm.createContext({
@@ -116,7 +116,7 @@ function boardWithCanvas(rect) {
   return context.game.board;
 }
 
-const UNSCROLLED = { left: 0, top: 0, width: 1200, height: 800 };
+const UNSCROLLED = { left: 0, top: 0, width: 800, height: 800 };
 
 // Arrays built inside the vm realm carry that realm's Array.prototype, and
 // deepStrictEqual compares prototypes — so copy into a host array first.
@@ -131,33 +131,37 @@ test("clicks map to the right square when the canvas is at the origin", () => {
 
 test("clicks stay correct after the page is scrolled", () => {
   // Scrolled down 300px: the canvas top is now at viewport -280.
-  const ui = boardWithCanvas({ left: 20, top: -280, width: 1200, height: 800 });
+  const ui = boardWithCanvas({ left: 20, top: -280, width: 800, height: 800 });
   assert.deepEqual(at(ui, 70, 470), [0, 0], "a1 after scroll");
   assert.deepEqual(at(ui, 770, -230), [7, 7], "h8 after scroll");
 });
 
 test("clicks stay correct when CSS displays the canvas smaller", () => {
-  // max-width:100% on a narrow window: 1200x800 shown at 600x400.
-  const ui = boardWithCanvas({ left: 20, top: 20, width: 600, height: 400 });
+  // max-width:100% on a narrow window: 800x800 shown at 400x400.
+  const ui = boardWithCanvas({ left: 20, top: 20, width: 400, height: 400 });
   assert.deepEqual(at(ui, 45, 395), [0, 0], "a1 at half scale");
   assert.deepEqual(at(ui, 395, 45), [7, 7], "h8 at half scale");
 });
 
-test("the strip beside the board is not clickable", () => {
-  // The canvas is 1200 wide; the board is 800. Without a guard, board[i][j]
-  // is undefined out there and reading .piece throws.
+test("a pointer outside the board maps to nothing and does not throw", () => {
+  // pointerup is bound to the window, so releases arrive from outside the
+  // canvas. Without the guard, board[i][j] is undefined and reading .piece
+  // throws — which is what happened when the canvas was wider than the board.
   const ui = boardWithCanvas(UNSCROLLED);
-  assert.deepEqual(at(ui, 1000, 400), [-1, -1]);
-  assert.doesNotThrow(() => ui.pointerDown({ clientX: 1000, clientY: 400 }));
+  for (const [x, y] of [[900, 400], [-40, 400], [400, 900], [400, -40]]) {
+    assert.deepEqual(at(ui, x, y), [-1, -1], `${x},${y}`);
+    assert.doesNotThrow(() => ui.pointerDown({ clientX: x, clientY: y }));
+    assert.doesNotThrow(() => ui.pointerUp({ clientX: x, clientY: y }));
+  }
 });
 
 test("every square on the board round-trips", () => {
-  const ui = boardWithCanvas({ left: 37, top: -113, width: 900, height: 600 });
+  const ui = boardWithCanvas({ left: 37, top: -113, width: 600, height: 600 });
   for (let i = 0; i < 8; i++) {
     for (let j = 0; j < 8; j++) {
       // centre of square (i, j) in canvas pixels, then to client pixels
       const cx = j * 100 + 50, cy = (7 - i) * 100 + 50;
-      const clientX = 37 + cx * (900 / 1200);
+      const clientX = 37 + cx * (600 / 800);
       const clientY = -113 + cy * (600 / 800);
       assert.deepEqual(at(ui, clientX, clientY), [i, j], `square ${i},${j}`);
     }
@@ -216,8 +220,8 @@ test("dropping on an illegal square plays nothing and clears the selection", () 
 test("releasing off the board does not leave a piece stuck to the cursor", () => {
   const ui = boardWithCanvas(UNSCROLLED);
   ui.pointerDown(SQ("e2"));
-  ui.pointerMove({ clientX: 1100, clientY: 400 });
-  ui.pointerUp({ clientX: 1100, clientY: 400 });
+  ui.pointerMove({ clientX: 950, clientY: 400 });
+  ui.pointerUp({ clientX: 950, clientY: 400 });
   assert.equal(ui.drag, null);
   assert.equal(ui.moveList.length, 0);
 });
@@ -240,7 +244,7 @@ test("pressing the selected piece again deselects it", () => {
 });
 
 test("a drag works when the canvas is scrolled and scaled", () => {
-  const ui = boardWithCanvas({ left: 20, top: -280, width: 600, height: 400 });
+  const ui = boardWithCanvas({ left: 20, top: -280, width: 400, height: 400 });
   const at = (name) => {
     const file = "abcdefgh".indexOf(name[0]), rank = Number(name[1]);
     return { clientX: 20 + (file * 100 + 50) * 0.5,

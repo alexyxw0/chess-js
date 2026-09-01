@@ -413,9 +413,14 @@ means a displayed pixel is not a canvas pixel. `tileAt` now goes through
 resize. Five tests cover it, including one that round-trips every square on a
 board that is both scrolled and scaled.
 
-**Clicking the strip beside the board threw.** The canvas is 1200 wide, the
-board 800. Out there `board[i][j]` is undefined and reading `.piece` is a
-TypeError. `tileAt` returns `[-1, -1]` and the handler returns early.
+**Clicking beside the board threw.** The canvas used to be 1200 wide for an
+800-wide board, and out in that strip `board[i][j]` is undefined and reading
+`.piece` is a TypeError. `tileAt` returns `[-1, -1]` and the handler returns
+early. The canvas is now exactly the board — the strip only existed to draw a
+"Checkmate!" caption, which the panel's turn indicator reports instead — so the
+settings sit directly beside the board rather than 400px past it. The guard
+still earns its place: `pointerup` listens on the window, so a release can
+arrive from anywhere on the page.
 
 **Arrow keys needed the canvas focused.** They were bound to the canvas, which
 only receives keys once it has focus, and the only way to focus it is to click
