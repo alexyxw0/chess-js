@@ -15,7 +15,7 @@ an ES module, and browsers refuse module imports over `file://`. It needs to be
 served over http, which is all `npm run serve` does.
 
 ```
-node --test test/*.test.js      # 89 tests, including 6 perft positions
+node --test test/*.test.js      # 99 tests, including 6 perft positions
 ```
 
 ## What's implemented
@@ -282,7 +282,7 @@ Inside `chess.js`:
 ## Tests
 
 ```bash
-npm test          # 89 tests
+npm test          # 99 tests
 npm run perft     # just the move-generation proofs
 ```
 
@@ -296,7 +296,7 @@ Node's built-in runner, so there is nothing to install.
 | `test/search.test.js` | mate in one and two with exact mate scores, preferring the faster mate, quiescence refusing a poisoned pawn, time limits, TT independence |
 | `test/adapter.test.js` | the FEN bridge, against a fake UI board |
 | `test/evalscale.test.js` | the eval bar's scale, sign conventions and mate labels |
-| `test/integration.test.js` | the real `chess.js` under a headless stub: engine games, click-to-square mapping under scroll and CSS scaling, and the drag/click gestures |
+| `test/integration.test.js` | the real `chess.js` under a headless stub: engine games, click-to-square mapping under scroll and CSS scaling, the drag/click gestures, and take-back/replay |
 
 The make/unmake symmetry test is the one that matters most: if unmake is not an
 exact inverse of make, every search result is built on corrupted state and the
@@ -380,7 +380,29 @@ while the engine thinks.
 
 ## Earlier UI fixes
 
-Three bugs the original had, all found by actually playing it:
+**Take-back turned pieces into other pieces.** The worst bug in the project,
+and one line:
+
+```js
+if (t1.piece.isPromoted == 0)     // false == 0 is true
+    this.master.demote(t1);
+```
+
+`isPromoted` is `false` for a piece that started as itself and a number for one
+that was promoted, counting moves since. Told apart with `==` rather than
+`===`, **every** take-back demoted the moved piece to a pawn — and the demoted
+pawn, now sitting on a back rank, was promoted to a queen by the next move's
+promotion check. Bishops became pawns; pawns became queens. It corrupted the
+engine too, since the adapter builds its FEN by reading the board's pieces.
+
+Fixed with strict equality, and the same loose comparison in `move`/`unmove`
+tightened alongside it. `checkPromotion` also stopped returning after the first
+pawn it found, which would have left a second one unpromoted. Nine tests cover
+rewinding now: piece identity, captures, castling, promotion round-trips, a
+full-game rewind back to the starting FEN, and that the engine still agrees
+with the board afterwards.
+
+Three more the original had, all found by actually playing it:
 
 **Clicks were offset.** `selectTile` read `e.clientY / 100` directly, which
 assumes the canvas is at the top-left of an unscrolled page and displayed at

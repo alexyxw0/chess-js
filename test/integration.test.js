@@ -252,3 +252,156 @@ test("a drag works when the canvas is scrolled and scaled", () => {
   assert.equal(ui.moveList.length, 1);
   assert.equal(ui.board[2][5].piece?.constructor.name, "Knight");
 });
+
+// ── take-back and replay ────────────────────────────────────────────────────
+//
+// `isPromoted` is `false` for a piece that started as itself and a number for
+// one that was promoted. Distinguishing them with `==` rather than `===`
+// demoted every piece to a pawn on take-back — and the demoted pawn, sitting
+// on a back rank, was then promoted to a queen by the next move's promotion
+// check. Bishops became pawns, and pawns became queens.
+
+function gameAt(fen_setup) {
+  const ui = boardWithCanvas(UNSCROLLED);
+  return ui;
+}
+
+const SQUARE = (ui, name) =>
+  ui.board[Number(name[1]) - 1]["abcdefgh".indexOf(name[0])];
+
+function play(ui, from, to) {
+  const move = ui.getAllMoves(ui.colors[ui.turn])
+    .find((m) => m.t1 === SQUARE(ui, from) && m.t2 === SQUARE(ui, to));
+  assert.ok(move, `no legal move ${from}${to}`);
+  ui.movePiece(move);
+}
+
+const LEFT = { keyCode: "37" };
+const RIGHT = { keyCode: "39" };
+const nameAt = (ui, sq) => SQUARE(ui, sq).piece?.constructor.name ?? null;
+
+test("take-back does not change what a piece is", () => {
+  const ui = gameAt();
+  play(ui, "e2", "e4"); play(ui, "e7", "e5");
+  play(ui, "f1", "c4");
+  ui.takeBack(LEFT);
+  assert.equal(nameAt(ui, "f1"), "Bishop");
+  assert.equal(nameAt(ui, "c4"), null);
+});
+
+test("replaying forward restores the same piece", () => {
+  const ui = gameAt();
+  play(ui, "g1", "f3"); play(ui, "b8", "c6");
+  ui.takeBack(LEFT);
+  ui.forward(RIGHT);
+  assert.equal(nameAt(ui, "c6"), "Knight");
+});
+
+test("a rewound piece is not promoted by the next move", () => {
+  // The second half of the same bug: a piece demoted onto a back rank was
+  // promoted to a queen by the promotion check on the following move.
+  const ui = gameAt();
+  play(ui, "e2", "e4"); play(ui, "e7", "e5");
+  play(ui, "f1", "c4");
+  ui.takeBack(LEFT);
+  play(ui, "d2", "d4");            // any move; runs checkPromotion
+  assert.equal(nameAt(ui, "f1"), "Bishop", "f1 must not have become a queen");
+});
+
+test("rewinding the whole game restores the starting position", () => {
+  const ui = gameAt();
+  const start = fenFromUi(ui);
+  for (const [from, to] of [["e2","e4"],["e7","e5"],["g1","f3"],["b8","c6"],
+                            ["f1","b5"],["g8","f6"]]) play(ui, from, to);
+  for (let i = 0; i < 6; i++) ui.takeBack(LEFT);
+  assert.equal(fenFromUi(ui), start);
+});
+
+test("rewinding and replaying returns to the same position", () => {
+  const ui = gameAt();
+  for (const [from, to] of [["d2","d4"],["d7","d5"],["c1","f4"],["b8","c6"]])
+    play(ui, from, to);
+  const after = fenFromUi(ui);
+  for (let i = 0; i < 4; i++) ui.takeBack(LEFT);
+  for (let i = 0; i < 4; i++) ui.forward(RIGHT);
+  assert.equal(fenFromUi(ui), after);
+});
+
+test("taking back a capture restores the captured piece", () => {
+  const ui = gameAt();
+  play(ui, "e2", "e4"); play(ui, "d7", "d5");
+  play(ui, "e4", "d5");                       // pawn takes pawn
+  assert.equal(nameAt(ui, "d5"), "Pawn");
+  ui.takeBack(LEFT);
+  assert.equal(nameAt(ui, "e4"), "Pawn", "the capturer is back on e4");
+  assert.equal(nameAt(ui, "d5"), "Pawn", "the captured pawn is restored");
+  assert.equal(SQUARE(ui, "d5").piece.color, "black");
+});
+
+test("taking back castling puts the rook back too", () => {
+  const ui = gameAt();
+  for (const [from, to] of [["e2","e4"],["e7","e5"],["g1","f3"],["b8","c6"],
+                            ["f1","c4"],["g8","f6"]]) play(ui, from, to);
+  play(ui, "e1", "g1");                       // O-O
+  assert.equal(nameAt(ui, "g1"), "King");
+  assert.equal(nameAt(ui, "f1"), "Rook");
+  ui.takeBack(LEFT);
+  assert.equal(nameAt(ui, "e1"), "King");
+  assert.equal(nameAt(ui, "h1"), "Rook");
+  assert.equal(nameAt(ui, "f1"), null);
+});
+
+test("the engine still agrees with the board after a rewind", () => {
+  // The corruption showed up in the engine too, because the adapter reads the
+  // board's pieces to build a FEN — a demoted bishop became a pawn there too.
+  const ui = gameAt();
+  play(ui, "e2", "e4"); play(ui, "e7", "e5"); play(ui, "f1", "c4");
+  ui.takeBack(LEFT);
+
+  const board = new Board(fenFromUi(ui));
+  const uiMoves = new Set(ui.getAllMoves(ui.colors[ui.turn]).map((m) =>
+    "abcdefgh"[m.t1.x] + (8 - m.t1.y) + "abcdefgh"[m.t2.x] + (8 - m.t2.y)));
+  const engineMoves = new Set(generateLegalMoves(board)
+    .map((m) => moveToUci(m).slice(0, 4)));
+  assert.deepEqual([...uiMoves].sort(), [...engineMoves].sort());
+});
+
+test("promotion round-trips: queen on the way forward, pawn on the way back", () => {
+  // A custom setup, so the position is one move from promoting.
+  const ui = boardWithCanvas(UNSCROLLED);
+  const BoardClass = ui.constructor;
+  const game = new BoardClass("k7/4P3/8/8/8/8/8/K7");
+
+  const sq = (n) => game.board[Number(n[1]) - 1]["abcdefgh".indexOf(n[0])];
+  const move = game.getAllMoves("white")
+    .find((m) => m.t1 === sq("e7") && m.t2 === sq("e8"));
+  assert.ok(move, "e7-e8 should be available");
+
+  game.movePiece(move);
+  assert.equal(sq("e8").piece.constructor.name, "Queen", "promoted");
+  assert.equal(sq("e8").piece.isPromoted, 1, "and marked as promoted");
+
+  game.takeBack(LEFT);
+  assert.equal(sq("e7").piece.constructor.name, "Pawn", "demoted on take-back");
+  assert.equal(sq("e7").piece.isPromoted, false, "and marked as never promoted");
+  assert.equal(sq("e8").piece, null);
+
+  game.forward(RIGHT);
+  assert.equal(sq("e8").piece.constructor.name, "Queen", "promoted again");
+});
+
+test("a promoted queen that moves again is not demoted early", () => {
+  const ui = boardWithCanvas(UNSCROLLED);
+  const game = new ui.constructor("k7/4P3/8/8/8/8/8/K7");
+  const sq = (n) => game.board[Number(n[1]) - 1]["abcdefgh".indexOf(n[0])];
+  const find = (from, to) => game.getAllMoves(game.colors[game.turn])
+    .find((m) => m.t1 === sq(from) && m.t2 === sq(to));
+
+  game.movePiece(find("e7", "e8"));      // promote
+  game.movePiece(find("a8", "b7"));      // black king moves
+  game.movePiece(find("e8", "e4"));      // the new queen moves
+  assert.equal(sq("e4").piece.constructor.name, "Queen");
+
+  game.takeBack(LEFT);                   // undo the queen move only
+  assert.equal(sq("e8").piece.constructor.name, "Queen", "still a queen");
+});

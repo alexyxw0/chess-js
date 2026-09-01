@@ -130,6 +130,11 @@ class Tile {
 
 
 class Piece {
+  // `isPromoted` is `false` for a piece that started as itself, and a number
+  // for one that was promoted — counting moves made since. Take-back demotes
+  // when that count returns to 0. The two meanings must be told apart with
+  // strict equality: `false == 0` is true in JavaScript, and the loose form
+  // demoted every piece that had ever moved back.
   constructor(color, master, isPromoted=false) {
     this.color = color;
     this.master = master;
@@ -139,13 +144,13 @@ class Piece {
 
   move() {
     this.hasMoved += 1;
-    if (this.isPromoted != false)
+    if (this.isPromoted !== false)
       this.isPromoted += 1;
   }
 
   unmove() {
     this.hasMoved -= 1;
-    if (this.isPromoted != false)
+    if (this.isPromoted !== false)
       this.isPromoted -= 1;
   }
 
@@ -466,7 +471,9 @@ class Move {
       t1.draw();
       t2.draw();
       t1.piece.unmove();
-      if (t1.piece.isPromoted == 0)
+      // Strictly 0, not falsy: a piece that was never promoted holds `false`
+      // here, and `false == 0` would demote it to a pawn on every take-back.
+      if (t1.piece.isPromoted === 0)
         this.master.demote(t1);
     }
   }
@@ -642,15 +649,14 @@ class Board {
     tile.piece = new Pawn(tile.piece.color, this);
   }
 
+  // Both back ranks, every file, no early exit: returning after the first pawn
+  // found would leave a second one unpromoted.
   checkPromotion() {
-    for (var i=0; i<this.board[0].length; i++) {
-      if (this.board[0][i].piece != null && this.board[0][i].piece.constructor.name == 'Pawn') {
-        this.promote(this.board[0][i]);
-        return;
-      }
-      if (this.board[this.board.length-1][i].piece != null && this.board[this.board.length-1][i].piece.constructor.name == 'Pawn') {
-        this.promote(this.board[this.board.length-1][i]);
-        return;
+    for (var row of [0, this.board.length-1]) {
+      for (var i=0; i<this.board[row].length; i++) {
+        const piece = this.board[row][i].piece;
+        if (piece != null && piece.constructor.name == 'Pawn')
+          this.promote(this.board[row][i]);
       }
     }
   }
