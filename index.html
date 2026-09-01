@@ -23,6 +23,20 @@
     #turn::before { content: ''; width: 14px; height: 14px; border-radius: 50%;
                     border: 1px solid #8d867a; background: var(--side, #e8e4dc); }
     #turn.check { color: #e8a598; }
+    .evalbar { position: relative; width: 26px; height: 800px; max-height: 80vh;
+               background: #1a1a18; border: 1px solid #4a463f; border-radius: 4px;
+               overflow: hidden; flex: 0 0 auto; }
+    /* White's share of the bar grows from the bottom, as on a chess site. */
+    #evalFill { position: absolute; left: 0; right: 0; bottom: 0; height: 50%;
+                background: #e8e4dc; transition: height .25s ease; }
+    #evalText { position: absolute; left: 0; right: 0; bottom: 4px;
+                text-align: center; font-size: 10px; font-weight: 600;
+                color: #2b2b28; mix-blend-mode: difference; filter: invert(1); }
+    .hint { color: #8d867a; font-size: 12px; }
+    input[type=number] { width: 5.5em; font: inherit; padding: 3px 6px;
+                         background: #3a3630; color: #e8e4dc;
+                         border: 1px solid #565049; border-radius: 4px; }
+    input:invalid { border-color: #b24d4d; }
     #status { min-height: 5.5em; font-variant-numeric: tabular-nums;
               white-space: pre-wrap; color: #b9b2a4; }
     kbd { background: #3a3630; border: 1px solid #565049; border-radius: 3px;
@@ -31,6 +45,11 @@
 </head>
 <body>
   <div class='wrap'>
+    <div class='evalbar' title='Engine evaluation, from White&#39;s point of view'>
+      <div id='evalFill'></div>
+      <span id='evalText'>0.0</span>
+    </div>
+
     <canvas id='mainCanvas' tabindex='1' width='1200' height='800'></canvas>
 
     <div class='panel'>
@@ -48,22 +67,17 @@
 
       <fieldset>
         <legend>Strength</legend>
-        <label>Depth
-          <select id='depth'>
-            <option value='2'>2 — instant</option>
-            <option value='3'>3 — fast</option>
-            <option value='4' selected>4 — default</option>
-            <option value='5'>5 — slower</option>
-            <option value='6'>6 — slowest</option>
-          </select>
+        <label>Max depth
+          <input id='depth' type='number' value='4' min='1' max='99' step='1'>
+          <span class='hint'>plies (1&ndash;99)</span>
         </label>
         <label>Time cap
-          <select id='budget'>
-            <option value='500'>0.5 s</option>
-            <option value='2000' selected>2 s</option>
-            <option value='5000'>5 s</option>
-          </select>
+          <input id='budget' type='number' value='2' min='0.1' max='600' step='0.1'>
+          <span class='hint'>seconds</span>
         </label>
+        <p class='hint'>Iterative deepening stops at whichever comes first, so a
+        high depth with a short cap just means &ldquo;go as deep as you can in
+        that time&rdquo;.</p>
       </fieldset>
 
       <fieldset>

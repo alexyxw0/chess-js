@@ -15,7 +15,7 @@ an ES module, and browsers refuse module imports over `file://`. It needs to be
 served over http, which is all `npm run serve` does.
 
 ```
-node --test test/*.test.js      # 82 tests, including 6 perft positions
+node --test test/*.test.js      # 89 tests, including 6 perft positions
 ```
 
 ## What's implemented
@@ -79,6 +79,33 @@ until the position is quiet. Without it the search stops mid-exchange and
 reports material at an arbitrary moment: "I take your queen" scores brilliantly
 if the search ends before the recapture. That is the horizon effect, and
 quiescence is the standard answer.
+
+### Faithful to the Corner Case engine
+
+The search follows `ccengine.py`, the engine I wrote for a Corner Case variant
+in 2026, ported to standard chess. Checking the port against the original
+turned up one bug and four behaviours I had simplified away:
+
+- **Bounds were judged against the wrong window.** The TT probe narrows
+  `alpha`/`beta`, and the store was labelling entries against the *narrowed*
+  values — so an entry could be recorded as a bound it never actually failed
+  against. The original saves the window before the probe. Now so does this.
+- **Repetition.** Positions on the current line are counted, a third occurrence
+  scores `-200`, and positions still on the path are not stored in the table.
+  Without it the side that is ahead will happily shuffle forever.
+- **Quiescence stood pat in check.** Standing pat means "I could decline to
+  capture" — not an option when your king is attacked. In check it now searches
+  every legal move, not just captures, and scores mate properly.
+- **Quiescence was fail-hard**, clamping returns to the window. The original is
+  fail-soft, which hands the caller and the table a sharper number.
+- **Killers and history keying.** Killers are a set of up to five per remaining
+  depth, and history is keyed by `(piece type, destination)` incremented by
+  `depth²` — as in the original, rather than by ply and origin square.
+
+The correctness gains cost speed. In-check quiescence generating every legal
+move roughly doubles quiescence nodes: kiwipete at depth 5 went from 198k nodes
+to 324k. That is the right trade — the old version misevaluated any line ending
+in check — but it is a real regression and the benchmark shows it.
 
 **Transposition table.** Zobrist-hashed, storing depth, score, best move, and
 whether the score is exact or a bound. JavaScript has no 64-bit integer, so the
@@ -255,7 +282,7 @@ Inside `chess.js`:
 ## Tests
 
 ```bash
-npm test          # 82 tests
+npm test          # 89 tests
 npm run perft     # just the move-generation proofs
 ```
 
@@ -268,6 +295,7 @@ Node's built-in runner, so there is nothing to install.
 | `test/board.test.js` | FEN round trips, castling rights, en passant, promotion, pins, and make/unmake symmetry for every legal move in six positions |
 | `test/search.test.js` | mate in one and two with exact mate scores, preferring the faster mate, quiescence refusing a poisoned pawn, time limits, TT independence |
 | `test/adapter.test.js` | the FEN bridge, against a fake UI board |
+| `test/evalscale.test.js` | the eval bar's scale, sign conventions and mate labels |
 | `test/integration.test.js` | the real `chess.js` under a headless stub: engine games, click-to-square mapping under scroll and CSS scaling, and the drag/click gestures |
 
 The make/unmake symmetry test is the one that matters most: if unmake is not an
@@ -300,6 +328,22 @@ diverge, that is a bug, not a tuning question.
   safety, or mobility terms, and no endgame tables. A search this shallow gains
   far more from correct pruning than from a cleverer evaluation.
 - No clock, no PGN import/export, no move list panel.
+
+## Evaluation bar and strength controls
+
+A bar beside the board shows the engine's evaluation, always from White's point
+of view, refreshed after every move and capped shallower than the engine's own
+setting so watching does not cost as much as playing.
+
+The scale is logistic — the usual pawns-to-win-probability curve — rather than
+linear. Most of a game sits inside ±200 centipawns, and on a linear bar a queen
+up pegs it and stops moving. `evalscale.js` is pure and separately tested,
+because a sign convention flipped between "side to move" and "White" produces a
+bar that looks entirely plausible and is exactly backwards.
+
+Depth and time cap are free-entry numbers rather than presets. Iterative
+deepening stops at whichever comes first, so a high depth with a short cap
+means "go as deep as you can in that time".
 
 ## Rendering and input
 

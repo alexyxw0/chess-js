@@ -20,6 +20,12 @@ const EXACT = 0, LOWER = 1, UPPER = 2;
 
 const MAX_PLY = 64;
 
+// Repeating a position is scored slightly worse than not, so a winning side
+// does not shuffle. Carried over from the Corner Case engine this follows.
+const REP_PENALTY = 200;
+const MAX_KILLERS = 5;
+const EMPTY_KILLERS = new Set();
+
 export class Search {
   // 2**18 entries. Measured: at 2**16 a depth-7 search fills and wipes the
   // table one to two times, which costs ~20% in both nodes and wall clock.
@@ -33,10 +39,14 @@ export class Search {
 
   reset() {
     this.tt = new Map();
-    // killers[ply] = two quiet moves that caused a cutoff at this ply
-    this.killers = Array.from({ length: MAX_PLY }, () => [0, 0]);
-    // history[from][to] — quiet moves that have historically caused cutoffs
-    this.history = Array.from({ length: 128 }, () => new Int32Array(128));
+    // killers[depth] = quiet moves that caused a cutoff at this remaining
+    // depth. Keyed by depth rather than ply, and capped, as in Corner Case.
+    this.killers = Array.from({ length: MAX_PLY }, () => new Set());
+    // history[pieceType][to] — quiet moves that have caused cutoffs before,
+    // keyed by what moved and where it went rather than by origin square.
+    this.history = Array.from({ length: 8 }, () => new Int32Array(128));
+    // Positions on the current search path, for repetition detection.
+    this.reps = new Map();
     this.resetStats();
   }
 
@@ -107,7 +117,7 @@ export class Search {
 
     this.nodes++;
 
-    const alphaOrig = alpha;
+    const alphaOrig = alpha, betaOrig = beta;
     const hash = board.hashKey();
     const entry = this.tt.get(hash);
     this.ttProbes++;
@@ -122,7 +132,13 @@ export class Search {
 
     if (depth === 0) return this.quiesce(board, alpha, beta, ply);
 
-    const moves = this.orderMoves(board, generateMoves(board), entry?.move ?? 0, ply);
+    // A position seen twice already on this line is a draw by repetition in
+    // all but name. Scoring it slightly negative stops the side that is ahead
+    // from shuffling pieces and calling it progress.
+    if ((this.reps.get(hash) ?? 0) >= 2) return -REP_PENALTY;
+    this.reps.set(hash, (this.reps.get(hash) ?? 0) + 1);
+
+    const moves = this.orderMoves(board, generateMoves(board), entry?.move ?? 0, depth);
 
     let best = -INFINITY, bestMove = 0, legalCount = 0;
 
@@ -146,13 +162,18 @@ export class Search {
         if (legalCount === 1) this.firstMoveCutoffs++;
         // A quiet move that causes a cutoff is worth trying early next time.
         if (!moveCaptured(move) && !(moveFlags(move) & FLAG_PROMO)) {
-          const slot = this.killers[ply];
-          if (slot[0] !== move) { slot[1] = slot[0]; slot[0] = move; }
-          this.history[moveFrom(move)][moveTo(move)] += depth * depth;
+          const slot = this.killers[depth];
+          if (slot.size > MAX_KILLERS) slot.clear();
+          slot.add(move);
+          this.history[pieceType(board.squares[moveFrom(move)])][moveTo(move)]
+            += depth * depth;
         }
         break;
       }
     }
+
+    const onPath = (this.reps.get(hash) ?? 0) - 1;
+    if (onPath > 0) this.reps.set(hash, onPath); else this.reps.delete(hash);
 
     // No legal move: checkmate or stalemate, and the difference is whether the
     // king is currently attacked. Mate scores fold in `ply` so that a mate in
@@ -161,7 +182,12 @@ export class Search {
       return board.inCheck() ? -MATE + ply : 0;
     }
 
-    this.store(hash, depth, best, bestMove, alphaOrig, beta);
+    // Bounds are judged against the window as it arrived, not as the table
+    // narrowed it — otherwise an entry gets labelled by a bound it never
+    // actually failed against. Only store positions no longer on the path.
+    if ((this.reps.get(hash) ?? 0) < 1) {
+      this.store(hash, depth, best, bestMove, alphaOrig, betaOrig);
+    }
     return best;
   }
 
@@ -176,40 +202,51 @@ export class Search {
   quiesce(board, alpha, beta, ply) {
     this.qnodes++;
 
-    // Standing pat: not being forced to capture is itself an option.
-    const standPat = evaluate(board);
-    if (standPat >= beta) return beta;
-    if (standPat > alpha) alpha = standPat;
-    if (ply >= MAX_PLY - 1) return alpha;
+    const inCheck = board.inCheck();
+    let best = evaluate(board);
 
-    const captures = this.orderMoves(board, generateMoves(board, true), 0, ply);
+    // Standing pat means "I could just decline to capture" — but in check that
+    // is not an option, so the score has to come from actually searching the
+    // escapes. Skipping this guard lets the search believe it can sit still
+    // while its king is attacked.
+    if (!inCheck) {
+      if (best >= beta) return best;
+      if (best > alpha) alpha = best;
+    } else {
+      best = -INFINITY;
+    }
+    if (ply >= MAX_PLY - 1) return inCheck ? evaluate(board) : best;
 
-    for (const move of captures) {
+    // In check, every legal move is a candidate; otherwise only captures.
+    const moves = this.orderMoves(
+      board, generateMoves(board, !inCheck), 0, 0);
+
+    let legal = 0;
+    for (const move of moves) {
       board.makeMove(move);
       if (board.isAttacked(board.kingSquare[board.side ^ 1], board.side)) {
         board.unmakeMove();
         continue;
       }
+      legal++;
       const score = -this.quiesce(board, -beta, -alpha, ply + 1);
       board.unmakeMove();
 
-      if (score >= beta) return beta;
+      // Fail-soft: return the value actually found rather than clamping to the
+      // window, so the caller and the table learn something sharper.
+      if (score > best) best = score;
+      if (score >= beta) return best;
       if (score > alpha) alpha = score;
     }
-    return alpha;
+
+    // In check with nothing legal is mate, and it has to be scored as mate
+    // rather than as whatever the material happened to be.
+    if (inCheck && legal === 0) return -MATE + ply;
+    return best;
   }
 
-  /**
-   * Order moves best-guess-first. The ranking, highest priority downward:
-   *   1. the transposition table's move for this position
-   *   2. captures by MVV-LVA — grab the most valuable victim with the least
-   *      valuable attacker, so QxP is tried after PxQ
-   *   3. killer moves — quiet moves that caused a cutoff at this same ply
-   *   4. the history heuristic — quiet moves that cut off anywhere, weighted
-   *      by the depth at which they did
-   */
-  orderMoves(board, moves, ttMove, ply) {
-    const [killer1, killer2] = this.killers[ply];
+  orderMoves(board, moves, ttMove, depth) {
+    const killers = this.killers[depth] ?? EMPTY_KILLERS;
     const scored = moves.map((move) => {
       let score = 0;
       if (move === ttMove) score = 10_000_000;
@@ -219,9 +256,10 @@ export class Search {
           const attacker = board.squares[moveFrom(move)];
           score = 1_000_000 +
             PIECE_VALUE[pieceType(victim)] * 16 - PIECE_VALUE[pieceType(attacker)];
-        } else if (move === killer1) score = 900_000;
-        else if (move === killer2) score = 800_000;
-        else score = this.history[moveFrom(move)][moveTo(move)];
+        } else if (killers.has(move)) score = 900_000;
+        else {
+          score = this.history[pieceType(board.squares[moveFrom(move)])][moveTo(move)];
+        }
         if (moveFlags(move) & FLAG_PROMO) score += PIECE_VALUE[movePromo(move)] * 16;
       }
       return { move, score };
@@ -230,12 +268,12 @@ export class Search {
     return scored.map((s) => s.move);
   }
 
-  store(hash, depth, score, move, alphaOrig, beta) {
+  store(hash, depth, score, move, alphaOrig, betaOrig) {
     // Crude replacement: clear when full. A real engine buckets by index and
     // replaces the shallower entry; this keeps the table honest without one.
     if (this.tt.size >= this.ttSize) this.tt.clear();
 
-    const bound = score <= alphaOrig ? UPPER : score >= beta ? LOWER : EXACT;
+    const bound = score <= alphaOrig ? UPPER : score >= betaOrig ? LOWER : EXACT;
     const existing = this.tt.get(hash);
     if (!existing || existing.depth <= depth) {
       this.tt.set(hash, { depth, score, move, bound });
