@@ -261,7 +261,7 @@ Node's built-in runner, so there is nothing to install.
 | `test/board.test.js` | FEN round trips, castling rights, en passant, promotion, pins, and make/unmake symmetry for every legal move in six positions |
 | `test/search.test.js` | mate in one and two with exact mate scores, preferring the faster mate, quiescence refusing a poisoned pawn, time limits, TT independence |
 | `test/adapter.test.js` | the FEN bridge, against a fake UI board |
-| `test/integration.test.js` | the real `chess.js` under a headless stub, playing engine games |
+| `test/integration.test.js` | the real `chess.js` under a headless stub: engine games, and click-to-square mapping under scroll and CSS scaling |
 
 The make/unmake symmetry test is the one that matters most: if unmake is not an
 exact inverse of make, every search result is built on corrupted state and the
@@ -296,6 +296,28 @@ diverge, that is a bug, not a tuning question.
   safety, or mobility terms, and no endgame tables. A search this shallow gains
   far more from correct pruning than from a cleverer evaluation.
 - No clock, no PGN import/export, no move list panel.
+
+## UI fixes
+
+Three bugs the original had, all found by actually playing it:
+
+**Clicks were offset.** `selectTile` read `e.clientY / 100` directly, which
+assumes the canvas is at the top-left of an unscrolled page and displayed at
+its backing-store size. All three assumptions are false in the real page:
+padding and a border move it, scrolling moves it again, and `max-width: 100%`
+means a displayed pixel is not a canvas pixel. `tileAt` now goes through
+`getBoundingClientRect()`, which handles all three and stays right after a
+resize. Five tests cover it, including one that round-trips every square on a
+board that is both scrolled and scaled.
+
+**Clicking the strip beside the board threw.** The canvas is 1200 wide, the
+board 800. Out there `board[i][j]` is undefined and reading `.piece` is a
+TypeError. `tileAt` returns `[-1, -1]` and the handler returns early.
+
+**Arrow keys needed the canvas focused.** They were bound to the canvas, which
+only receives keys once it has focus, and the only way to focus it is to click
+it — which also selects a square. They listen on the document now, with a guard
+so arrows keep their normal meaning inside a form control.
 
 ## Origin
 

@@ -10,6 +10,7 @@ const statusEl = document.getElementById("status");
 const depthEl = document.getElementById("depth");
 const budgetEl = document.getElementById("budget");
 const hintButton = document.getElementById("hint");
+const turnEl = document.getElementById("turn");
 
 const options = () => ({
   maxDepth: Number(depthEl.value),
@@ -34,6 +35,26 @@ hintButton.addEventListener("click", () => {
 });
 
 function say(text) { statusEl.textContent = text; }
+
+/** Whose move it is, whether they are in check, and whether the game is over. */
+function showTurn() {
+  const ui = window.game?.board;
+  if (!ui) return;
+  const white = ui.turn === 0;
+  const over = ui.getAllMoves(ui.colors[ui.turn]).length === 0;
+
+  turnEl.style.setProperty("--side", white ? "#e8e4dc" : "#2b2b28");
+  turnEl.classList.toggle("check", ui.checked && !over);
+
+  if (over) {
+    turnEl.textContent = ui.checked
+      ? `Checkmate — ${white ? "Black" : "White"} wins`
+      : "Stalemate — draw";
+  } else {
+    turnEl.textContent = `${white ? "White" : "Black"} to move`
+      + (ui.checked ? " — in check" : "");
+  }
+}
 
 function describe(thought, label) {
   // Scores are centipawns from the side to move's view; show them from White's
@@ -69,5 +90,11 @@ function maybeMove() {
 const original = window.game.board.movePiece.bind(window.game.board);
 window.game.board.movePiece = function (move) {
   original(move);
+  showTurn();
   maybeMove();
 };
+
+// History keys rewind the position without going through movePiece, so the
+// indicator has to follow them too.
+document.addEventListener("keydown", () => requestAnimationFrame(showTurn));
+showTurn();

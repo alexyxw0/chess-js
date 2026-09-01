@@ -18,6 +18,11 @@
                      color: #e8e4dc; border: 1px solid #565049; border-radius: 4px; }
     button { cursor: pointer; }
     button:hover { background: #474139; }
+    #turn { font-size: 15px; font-weight: 600; display: flex;
+            align-items: center; gap: 8px; }
+    #turn::before { content: ''; width: 14px; height: 14px; border-radius: 50%;
+                    border: 1px solid #8d867a; background: var(--side, #e8e4dc); }
+    #turn.check { color: #e8a598; }
     #status { min-height: 5.5em; font-variant-numeric: tabular-nums;
               white-space: pre-wrap; color: #b9b2a4; }
     kbd { background: #3a3630; border: 1px solid #565049; border-radius: 3px;
@@ -29,6 +34,11 @@
     <canvas id='mainCanvas' tabindex='1' width='1200' height='800'></canvas>
 
     <div class='panel'>
+      <fieldset>
+        <legend>Turn</legend>
+        <div id='turn'>White to move</div>
+      </fieldset>
+
       <fieldset>
         <legend>Opponent</legend>
         <label><input type='radio' name='mode' value='human' checked> Two players</label>

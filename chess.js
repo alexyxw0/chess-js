@@ -1,4 +1,5 @@
 var c = document.getElementById('mainCanvas');
+const TILE = 100;   // board square, in canvas pixels
 var ctx = c.getContext('2d');
 ctx.font = '20px Arial';
 
@@ -719,9 +720,34 @@ class Board {
     }
   }
 
+  /**
+   * Turn a click into board indices, or [-1, -1] if it missed the board.
+   *
+   * clientX/clientY are viewport coordinates, so three things have to be
+   * undone before they mean anything to the board:
+   *   - the canvas is not at the top-left of the page (padding, border)
+   *   - the page can be scrolled, which moves the canvas under the viewport
+   *   - CSS can display the canvas at a size other than its 1200x800 backing
+   *     store, so a displayed pixel is not a canvas pixel
+   * getBoundingClientRect() gives the canvas's live position and displayed
+   * size, which handles all three at once and stays correct after a scroll,
+   * a resize, or a layout change.
+   */
+  tileAt(e) {
+    const rect = c.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (c.width / rect.width);
+    const y = (e.clientY - rect.top) * (c.height / rect.height);
+    const j = Math.floor(x / TILE);
+    const i = 7 - Math.floor(y / TILE);
+    // The canvas is wider than the board; the strip to the right of it holds
+    // the end-of-game message and is not clickable.
+    if (i < 0 || i > 7 || j < 0 || j > 7) return [-1, -1];
+    return [i, j];
+  }
+
   selectTile(e) {
-    const i = 7-Math.floor(e.clientY / 100);
-    const j = Math.floor(e.clientX / 100);
+    const [i, j] = this.tileAt(e);
+    if (i < 0) return;
     var moved = false
     for (var move of this.currentMoves) {
       if (!moved && this.board[i][j] == move.t2) {
@@ -819,8 +845,18 @@ class Board {
     }
     this.update();
     c.addEventListener('click', this.selectTile.bind(this));
-    c.addEventListener('keydown', this.takeBack.bind(this));
-    c.addEventListener('keydown', this.forward.bind(this));
+
+    // History keys listen on the document, not the canvas: bound to the canvas
+    // they only fire once it has focus, and the only way to focus it is to
+    // click it — which also selects a square. The guard keeps arrow keys
+    // meaning what they normally mean inside a form control.
+    const unlessTyping = (handler) => (e) => {
+      const el = document.activeElement;
+      if (el && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(el.tagName)) return;
+      handler(e);
+    };
+    document.addEventListener('keydown', unlessTyping(this.takeBack.bind(this)));
+    document.addEventListener('keydown', unlessTyping(this.forward.bind(this)));
   }
 
   forward(e) {
