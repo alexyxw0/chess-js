@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { Board, WHITE, BLACK } from "../engine/board.js";
-import { evaluate, kingDanger, phaseOf, PIECE_VALUE } from "../engine/eval.js";
+import { evaluate, kingDanger, mobility, phaseOf, PIECE_VALUE } from "../engine/eval.js";
 
 /**
  * Evaluate a FEN, refusing one that is missing a king.
@@ -98,6 +98,41 @@ test("the two king tables pull in opposite directions", () => {
   const earlyCentral = evalOf("rnbqkbnr/pppppppp/8/8/3K4/8/PPPPPPPP/RNBQ1BNR w kq - 0 1");
   const earlyHome = evalOf("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
   assert.ok(earlyCentral < earlyHome);
+});
+
+// ── mobility ────────────────────────────────────────────────────────────────
+
+test("a piece with more squares to go to is worth more", () => {
+  const corner = new Board("4k3/8/8/8/8/8/8/N3K3 w - - 0 1");   // knight a1, 2 moves
+  const centre = new Board("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1");  // knight d4, 8 moves
+  assert.ok(mobility(centre, WHITE) > mobility(corner, WHITE));
+  assert.ok(evaluate(centre) > evaluate(corner));
+});
+
+test("a rook behind its own pawns is worth less than one on an open file", () => {
+  const boxed = new Board("4k3/8/8/8/8/8/P7/R3K3 w - - 0 1");
+  const open = new Board("4k3/8/8/8/8/P7/8/R3K3 w - - 0 1");
+  assert.ok(mobility(open, WHITE) > mobility(boxed, WHITE));
+});
+
+test("squares an enemy pawn covers do not count as mobility", () => {
+  // The knight has the same eight destinations either way; a pawn covering
+  // some of them means it cannot actually use them.
+  const free = new Board("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1");
+  const covered = new Board("4k3/8/2p1p3/8/3N4/8/8/4K3 w - - 0 1");
+  assert.ok(mobility(covered, WHITE) < mobility(free, WHITE));
+});
+
+test("mobility is symmetric, so it cancels in a mirrored position", () => {
+  const board = new Board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+  assert.equal(mobility(board, WHITE), mobility(board, BLACK));
+});
+
+test("pawns and kings contribute no mobility", () => {
+  // Their movement is either structural or already covered by the king tables,
+  // and counting it would double up with the phase-interpolated king PST.
+  const board = new Board("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1");
+  assert.equal(mobility(board, WHITE), 0);
 });
 
 // ── material still dominates ────────────────────────────────────────────────

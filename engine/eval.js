@@ -10,6 +10,7 @@
 // early and centralise late. A single set of numbers gets both wrong.
 
 import { EMPTY, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, WHITE, BLACK,
+         KNIGHT_OFFSETS, KING_OFFSETS, BISHOP_OFFSETS, ROOK_OFFSETS,
          pieceType, pieceColour, fileOf, rankOf, makePiece, onBoard } from "./board.js";
 
 export const PIECE_VALUE = [0, 100, 320, 330, 500, 900, 20000];
@@ -118,6 +119,96 @@ export function phaseOf(board) {
   return Math.min(phase, MAX_PHASE) / MAX_PHASE;
 }
 
+// ── mobility ────────────────────────────────────────────────────────────────
+
+// Centipawns per available square. The weights are roughly inverse to how many
+// squares each piece can reach at best, so no one piece dominates the term: a
+// knight tops out around 8 squares and a queen around 27, and without that
+// scaling the queen's mobility would swamp everything else.
+const MOBILITY_WEIGHT = [0, 0, 4, 3, 2, 1, 0];
+
+// What counts as ordinary for each piece. The term scores the *difference*
+// from this, not the raw count — otherwise having more pieces would score as
+// mobility, which is just material counted twice, and every evaluation would
+// drift upward with the side that happens to have more wood.
+const MOBILITY_BASE = [0, 0, 4, 6, 7, 14, 0];
+
+const SLIDER_RAYS = {
+  [BISHOP]: BISHOP_OFFSETS,
+  [ROOK]: ROOK_OFFSETS,
+  [QUEEN]: KING_OFFSETS,
+};
+
+/** Is `square` covered by one of `byColour`'s pawns? */
+function attackedByPawn(board, square, byColour) {
+  const pawn = makePiece(PAWN, byColour);
+  const back = byColour === WHITE ? -1 : 1;
+  for (const side of [15, 17]) {
+    const from = square + side * back;
+    if (onBoard(from) && board.squares[from] === pawn) return true;
+  }
+  return false;
+}
+
+/**
+ * How many squares a piece can actually go to.
+ *
+ * Squares covered by an enemy pawn do not count. A knight with eight moves
+ * that all drop it in front of a pawn is not mobile, it is just surrounded —
+ * and rewarding those squares would have the engine parking pieces where they
+ * get kicked.
+ */
+function movesAvailable(board, from, piece) {
+  const type = pieceType(piece), us = pieceColour(piece), them = us ^ 1;
+  const sq = board.squares;
+  let count = 0;
+
+  const usable = (to) => {
+    const target = sq[to];
+    if (target !== EMPTY && pieceColour(target) === us) return false;
+    return !attackedByPawn(board, to, them);
+  };
+
+  if (type === KNIGHT) {
+    for (const offset of KNIGHT_OFFSETS) {
+      const to = from + offset;
+      if (onBoard(to) && usable(to)) count++;
+    }
+    return count;
+  }
+
+  const rays = SLIDER_RAYS[type];
+  if (!rays) return 0;                       // pawns and kings are excluded
+  for (const offset of rays) {
+    for (let to = from + offset; onBoard(to); to += offset) {
+      if (usable(to)) count++;
+      if (sq[to] !== EMPTY) break;           // blocked, including by a capture
+    }
+  }
+  return count;
+}
+
+// Mobility is the most expensive term here — it walks every slider's rays at
+// every leaf. Toggleable so its worth can be measured rather than assumed;
+// see bench/match.js.
+let mobilityEnabled = true;
+export const setMobility = (on) => { mobilityEnabled = on; };
+
+/** Mobility for one side, in centipawns, relative to ordinary. */
+export function mobility(board, colour) {
+  let score = 0;
+  for (let sq = 0; sq < 128; sq++) {
+    if (sq & 0x88) { sq += 7; continue; }
+    const piece = board.squares[sq];
+    if (piece === EMPTY || pieceColour(piece) !== colour) continue;
+    const type = pieceType(piece);
+    const weight = MOBILITY_WEIGHT[type];
+    if (weight === 0) continue;
+    score += (movesAvailable(board, sq, piece) - MOBILITY_BASE[type]) * weight;
+  }
+  return score;
+}
+
 // ── king safety ─────────────────────────────────────────────────────────────
 
 // How much each enemy piece near the king is worth as a threat. A queen in the
@@ -219,6 +310,8 @@ export function evaluate(board) {
     const black = kingDanger(board, BLACK);
     score += (black - white) * phase;
   }
+
+  if (mobilityEnabled) score += mobility(board, WHITE) - mobility(board, BLACK);
 
   return Math.round(board.side === WHITE ? score : -score);
 }

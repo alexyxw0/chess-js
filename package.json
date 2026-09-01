@@ -9,7 +9,8 @@
     "perft": "node --test test/perft.test.js",
     "serve": "node scripts/serve.js",
     "bench": "node bench/bench.js",
-    "bench:quick": "node bench/bench.js --quick"
+    "bench:quick": "node bench/bench.js --quick",
+    "match": "node bench/match.js"
   },
   "license": "MIT"
 }

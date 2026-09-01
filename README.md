@@ -15,7 +15,7 @@ an ES module, and browsers refuse module imports over `file://`. It needs to be
 served over http, which is all `npm run serve` does.
 
 ```
-node --test test/*.test.js      # 110 tests, including 6 perft positions
+node --test test/*.test.js      # 115 tests, including 6 perft positions
 ```
 
 ## What's implemented
@@ -48,7 +48,7 @@ testable in Node with no DOM.
 |---|---|
 | `board.js` | 0x88 board, FEN, reversible make/unmake, attack detection |
 | `movegen.js` | pseudo-legal generation, legality filter, perft |
-| `eval.js` | material, piece-square tables, king safety, game phase |
+| `eval.js` | material, piece-square tables, mobility, king safety, game phase |
 | `zobrist.js` | position hashing for the transposition table |
 | `search.js` | negamax, alpha-beta, iterative deepening, quiescence, ordering |
 
@@ -73,6 +73,49 @@ turns an exponential tree into a tractable one. In priority order:
 3. killer moves — quiet moves that caused a cutoff at this same ply
 4. the history heuristic — quiet moves that cut off anywhere, weighted by the
    depth at which they did
+
+### Mobility
+
+Every piece scores for how many squares it can actually move to. Squares
+covered by an enemy pawn do not count — a knight with eight destinations that
+all sit in front of a pawn is not mobile, it is surrounded, and rewarding those
+squares would have the engine parking pieces where they get kicked.
+
+Two details do most of the work:
+
+**The weights are inverse to reach.** A knight scores 4 per square, a queen 1.
+A knight tops out near 8 squares and a queen near 27, so without that scaling
+the queen's mobility would swamp every other piece's.
+
+**It scores the difference from ordinary, not the raw count.** A rook is
+measured against 7 squares, a queen against 14. Counting raw mobility would
+mean the side with more pieces scores higher *for having them* — material
+counted a second time, in a term that is supposed to be about position.
+
+The artifact of that choice, stated plainly: a piece with no moves at all
+scores slightly worse than not having the piece. It is bounded at −14
+centipawns for a queen, which is noise against 900, but it is there.
+
+**Was it worth it?** Mobility is the most expensive term in the evaluation:
+`evaluate()` went from 0.78µs to 1.73µs, and depth 6 on kiwipete went from
+710k nodes / 970 ms to 851k nodes / 1747 ms. Unlike king safety, it made the
+search *worse* on both counts — more nodes and slower nodes, a 1.8× slowdown
+to reach the same depth. Microseconds cannot answer whether that pays; only
+games can, so `bench/match.js` plays the engine against itself with the term
+switched on and off, same time per move, colours swapped:
+
+```
+node bench/match.js --games 60 --ms 80
+
+  with mobility     19 wins
+  without mobility   5 wins
+  draws             36
+  score for mobility 61.7%   (~+83 Elo)
+```
+
+An earlier 20-game run scored 60.0%. Two samples around 60% is reasonable
+evidence the term pays for the depth it costs — though 80 games total is still
+far too few to put a number on it, which is why the script says so.
 
 ### King safety
 
@@ -311,7 +354,7 @@ Inside `chess.js`:
 ## Tests
 
 ```bash
-npm test          # 110 tests
+npm test          # 115 tests
 npm run perft     # just the move-generation proofs
 ```
 
@@ -356,7 +399,7 @@ diverge, that is a bug, not a tuning question.
   queen, so the adapter drops the promotion suffix when handing a move back.
 - No pawn-structure terms — doubled, isolated and passed pawns all score the
   same as any other pawn.
-- No mobility term, and no bishop-pair bonus.
+- No bishop-pair bonus.
 - King safety is distance-based rather than a proper attacker count on the king
   zone, which is cheaper and cruder: it rewards bringing pieces *toward* the
   king without knowing whether they actually attack anything there.
