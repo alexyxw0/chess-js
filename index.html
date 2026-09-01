@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <title>Chess</title>
+  <style>
+    body { margin: 0; font: 14px/1.5 system-ui, -apple-system, sans-serif;
+           background: #2b2b28; color: #e8e4dc; }
+    .wrap { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+    canvas { border: 4px solid #1a1a18; max-width: 100%; height: auto; }
+    .panel { min-width: 240px; max-width: 340px; }
+    fieldset { border: 1px solid #4a463f; border-radius: 6px; margin: 0 0 12px; }
+    legend { padding: 0 6px; color: #b9b2a4; font-size: 12px;
+             text-transform: uppercase; letter-spacing: .06em; }
+    label { display: block; margin: 4px 0; }
+    select, button { font: inherit; padding: 4px 8px; background: #3a3630;
+                     color: #e8e4dc; border: 1px solid #565049; border-radius: 4px; }
+    button { cursor: pointer; }
+    button:hover { background: #474139; }
+    #status { min-height: 5.5em; font-variant-numeric: tabular-nums;
+              white-space: pre-wrap; color: #b9b2a4; }
+    kbd { background: #3a3630; border: 1px solid #565049; border-radius: 3px;
+          padding: 0 4px; }
+  </style>
+</head>
+<body>
+  <div class='wrap'>
+    <canvas id='mainCanvas' tabindex='1' width='1200' height='800'></canvas>
+
+    <div class='panel'>
+      <fieldset>
+        <legend>Opponent</legend>
+        <label><input type='radio' name='mode' value='human' checked> Two players</label>
+        <label><input type='radio' name='mode' value='black'> Engine plays Black</label>
+        <label><input type='radio' name='mode' value='white'> Engine plays White</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Strength</legend>
+        <label>Depth
+          <select id='depth'>
+            <option value='2'>2 — instant</option>
+            <option value='3'>3 — fast</option>
+            <option value='4' selected>4 — default</option>
+            <option value='5'>5 — slower</option>
+            <option value='6'>6 — slowest</option>
+          </select>
+        </label>
+        <label>Time cap
+          <select id='budget'>
+            <option value='500'>0.5 s</option>
+            <option value='2000' selected>2 s</option>
+            <option value='5000'>5 s</option>
+          </select>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Engine</legend>
+        <button id='hint' type='button'>Suggest a move</button>
+        <div id='status'>Iterative deepening stops at whichever of depth or
+time cap comes first.</div>
+      </fieldset>
+
+      <p style='color:#8d867a'>Click a piece, then a highlighted square.
+      <kbd>&larr;</kbd> / <kbd>&rarr;</kbd> step through the move history.</p>
+    </div>
+  </div>
+
+  <script src='./chess.js'></script>
+  <script type='module' src='./ui-engine.js'></script>
+</body>
+</html>

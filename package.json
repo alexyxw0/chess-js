@@ -1,0 +1,15 @@
+{
+  "name": "chess-js",
+  "version": "1.0.0",
+  "description": "Chess in the browser: full rules on a canvas, plus an alpha-beta engine",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "perft": "node --test test/perft.test.js",
+    "serve": "python3 -m http.server 8000",
+    "bench": "node bench/bench.js",
+    "bench:quick": "node bench/bench.js --quick"
+  },
+  "license": "MIT"
+}
