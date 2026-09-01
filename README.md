@@ -15,7 +15,7 @@ an ES module, and browsers refuse module imports over `file://`. It needs to be
 served over http, which is all `npm run serve` does.
 
 ```
-node --test test/*.test.js      # 99 tests, including 6 perft positions
+node --test test/*.test.js      # 110 tests, including 6 perft positions
 ```
 
 ## What's implemented
@@ -48,7 +48,7 @@ testable in Node with no DOM.
 |---|---|
 | `board.js` | 0x88 board, FEN, reversible make/unmake, attack detection |
 | `movegen.js` | pseudo-legal generation, legality filter, perft |
-| `eval.js` | material + piece-square tables |
+| `eval.js` | material, piece-square tables, king safety, game phase |
 | `zobrist.js` | position hashing for the transposition table |
 | `search.js` | negamax, alpha-beta, iterative deepening, quiescence, ordering |
 
@@ -73,6 +73,35 @@ turns an exponential tree into a tractable one. In priority order:
 3. killer moves — quiet moves that caused a cutoff at this same ply
 4. the history heuristic — quiet moves that cut off anywhere, weighted by the
    depth at which they did
+
+### King safety
+
+Playtesting turned up the gap that mattered: tactically sharp, but it never
+*started* anything. With material and piece-square tables alone there is no
+reason to walk a knight toward the enemy king, no reason to keep a pawn shield,
+and no reason to open a file — so it defended accurately and never attacked.
+
+Evaluation now carries three king-safety terms, all phase-scaled:
+
+- **Piece proximity.** Enemy pieces near the king score against its owner,
+  weighted by what they are — a queen at distance 2 is an attack, a knight at
+  distance 5 is not — falling to nothing by distance 6, so a piece has to
+  commit before it counts.
+- **Pawn shield.** A bonus per pawn covering the king's file and its
+  neighbours, less for one that has advanced, a penalty where there is none.
+- **Open files.** A file with no pawn of either colour pointing at the king is
+  a road to it.
+
+**Phase** runs from 1.0 at the opening to 0.0 once only kings and pawns remain,
+and scales all of it. That matters in both directions: king safety is
+meaningless in a king-and-pawn endgame, and the king's own table is
+interpolated between a middlegame one that says *hide* and an endgame one that
+says *walk to the middle and help*. One set of numbers gets one of those wrong.
+
+The cost is real: `evaluate()` went from 0.25µs to 0.78µs, 3.1× slower. But
+depth 6 on kiwipete visits **15% fewer nodes** — a better evaluation orders
+moves better, so the search does less work per ply — and the net is 20% slower
+in wall clock. Worth it for an engine that plays for something.
 
 **Quiescence.** At depth zero the search keeps going, but on captures only,
 until the position is quiet. Without it the search stops mid-exchange and
@@ -282,7 +311,7 @@ Inside `chess.js`:
 ## Tests
 
 ```bash
-npm test          # 99 tests
+npm test          # 110 tests
 npm run perft     # just the move-generation proofs
 ```
 
@@ -295,6 +324,7 @@ Node's built-in runner, so there is nothing to install.
 | `test/board.test.js` | FEN round trips, castling rights, en passant, promotion, pins, and make/unmake symmetry for every legal move in six positions |
 | `test/search.test.js` | mate in one and two with exact mate scores, preferring the faster mate, quiescence refusing a poisoned pawn, time limits, TT independence |
 | `test/adapter.test.js` | the FEN bridge, against a fake UI board |
+| `test/eval.test.js` | each evaluation term's direction, phase, and that no positional term outweighs a piece |
 | `test/evalscale.test.js` | the eval bar's scale, sign conventions and mate labels |
 | `test/integration.test.js` | the real `chess.js` under a headless stub: engine games, click-to-square mapping under scroll and CSS scaling, the drag/click gestures, and take-back/replay |
 
@@ -324,9 +354,12 @@ diverge, that is a bug, not a tuning question.
 - **No underpromotion in the UI.** The engine generates all four promotion
   pieces and perft covers them, but `Board.promote` in `chess.js` always makes a
   queen, so the adapter drops the promotion suffix when handing a move back.
-- Evaluation is material plus piece-square tables — no pawn structure, king
-  safety, or mobility terms, and no endgame tables. A search this shallow gains
-  far more from correct pruning than from a cleverer evaluation.
+- No pawn-structure terms — doubled, isolated and passed pawns all score the
+  same as any other pawn.
+- No mobility term, and no bishop-pair bonus.
+- King safety is distance-based rather than a proper attacker count on the king
+  zone, which is cheaper and cruder: it rewards bringing pieces *toward* the
+  king without knowing whether they actually attack anything there.
 - No clock, no PGN import/export, no move list panel.
 
 ## Evaluation bar and strength controls
