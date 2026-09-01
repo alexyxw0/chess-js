@@ -10,6 +10,32 @@ import { Board } from "./engine/board.js";
 import { generateLegalMoves, moveToUci } from "./engine/movegen.js";
 import { Search } from "./engine/search.js";
 
+// One long-lived worker, so a search never blocks the board. Requests carry an
+// id and late replies are dropped: take back a move mid-search and the answer
+// to the position you left is no longer wanted.
+let worker = null;
+let nextRequestId = 1;
+const pending = new Map();
+
+function ensureWorker() {
+  if (worker) return worker;
+  worker = new Worker(new URL("./engine/worker.js", import.meta.url),
+                      { type: "module" });
+  worker.onmessage = ({ data }) => {
+    const settle = pending.get(data.id);
+    if (!settle) return;
+    pending.delete(data.id);
+    if (data.error) settle.reject(new Error(data.error));
+    else settle.resolve(data.thought);
+  };
+  worker.onerror = (event) => {
+    for (const { reject } of pending.values()) reject(new Error(event.message));
+    pending.clear();
+    worker = null;   // rebuilt on the next request
+  };
+  return worker;
+}
+
 const TYPE_LETTER = {
   Pawn: "p", Knight: "n", Bishop: "b", Rook: "r", Queen: "q", King: "k",
 };
@@ -83,30 +109,36 @@ export function uiMoveFromUci(ui, uci) {
 }
 
 /**
- * Ask the engine for a move in the UI's current position.
- * @returns {{uci: string, depth: number, nodes: number, score: number,
- *            elapsedMs: number, pv: string[]} | null}
+ * Ask the engine for a move in the UI's current position, off the main thread.
+ * @returns {Promise<{uci, depth, nodes, score, elapsedMs, pv} | null>}
  */
 export function think(ui, { maxDepth = 4, timeLimitMs = 2000 } = {}) {
+  const fen = fenFromUi(ui);
+  if (generateLegalMoves(new Board(fen)).length === 0) return Promise.resolve(null);
+
+  const id = nextRequestId++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    ensureWorker().postMessage({ id, fen, maxDepth, timeLimitMs });
+  });
+}
+
+/** Synchronous search on the calling thread. Used by the tests, which have no
+ *  Worker, and as the fallback when constructing one fails. */
+export function thinkSync(ui, { maxDepth = 4, timeLimitMs = 2000 } = {}) {
   const board = new Board(fenFromUi(ui));
   if (generateLegalMoves(board).length === 0) return null;
-
   const result = new Search({ maxDepth, timeLimitMs }).findBestMove(board);
   if (result.move === null) return null;
-
   return {
-    uci: moveToUci(result.move),
-    depth: result.depth,
-    nodes: result.nodes,
-    score: result.score,
-    elapsedMs: result.elapsedMs,
-    pv: result.pv,
+    uci: moveToUci(result.move), depth: result.depth, nodes: result.nodes,
+    score: result.score, elapsedMs: result.elapsedMs, pv: result.pv,
   };
 }
 
 /** Compute and play the engine's reply on the UI board. */
-export function playEngineMove(ui, options) {
-  const thought = think(ui, options);
+export async function playEngineMove(ui, options) {
+  const thought = await think(ui, options);
   if (thought === null) return null;
 
   const move = uiMoveFromUci(ui, thought.uci);

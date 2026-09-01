@@ -15,7 +15,7 @@ an ES module, and browsers refuse module imports over `file://`. It needs to be
 served over http, which is all `npm run serve` does.
 
 ```
-node --test test/*.test.js      # 46 tests, including 6 perft positions
+node --test test/*.test.js      # 82 tests, including 6 perft positions
 ```
 
 ## What's implemented
@@ -255,7 +255,7 @@ Inside `chess.js`:
 ## Tests
 
 ```bash
-npm test          # 46 tests
+npm test          # 82 tests
 npm run perft     # just the move-generation proofs
 ```
 
@@ -268,7 +268,7 @@ Node's built-in runner, so there is nothing to install.
 | `test/board.test.js` | FEN round trips, castling rights, en passant, promotion, pins, and make/unmake symmetry for every legal move in six positions |
 | `test/search.test.js` | mate in one and two with exact mate scores, preferring the faster mate, quiescence refusing a poisoned pawn, time limits, TT independence |
 | `test/adapter.test.js` | the FEN bridge, against a fake UI board |
-| `test/integration.test.js` | the real `chess.js` under a headless stub: engine games, and click-to-square mapping under scroll and CSS scaling |
+| `test/integration.test.js` | the real `chess.js` under a headless stub: engine games, click-to-square mapping under scroll and CSS scaling, and the drag/click gestures |
 
 The make/unmake symmetry test is the one that matters most: if unmake is not an
 exact inverse of make, every search result is built on corrupted state and the
@@ -296,15 +296,45 @@ diverge, that is a bug, not a tuning question.
 - **No underpromotion in the UI.** The engine generates all four promotion
   pieces and perft covers them, but `Board.promote` in `chess.js` always makes a
   queen, so the adapter drops the promotion suffix when handing a move back.
-- The search runs on the main thread, so a deep search freezes the page while it
-  thinks. A Web Worker is the fix; at these depths it has not been worth the
-  message passing.
 - Evaluation is material plus piece-square tables — no pawn structure, king
   safety, or mobility terms, and no endgame tables. A search this shallow gains
   far more from correct pruning than from a cleverer evaluation.
 - No clock, no PGN import/export, no move list panel.
 
-## UI fixes
+## Rendering and input
+
+The board is repainted in **one pass per frame** — squares, then pieces, then
+move indicators, then a dragged piece last so it floats above everything. Any
+state change asks for a frame rather than painting immediately, so a move that
+touches four squares still costs one redraw.
+
+That replaced the original's per-tile drawing, which was the source of the lag:
+
+```js
+this.img.onload = function(){ ctx.drawImage(this.img, ...) }.bind(this);
+this.img.src = this.piece.getStr();
+```
+
+Every repaint of every square set `img.src` and drew from an `onload` handler,
+making each square an asynchronous image load. The piece arrived a frame or
+more after the square under it, and a single move did that four or five times.
+The twelve sprites are now decoded once at startup and blitted synchronously.
+
+**Pieces can be dragged or clicked.** A click and the start of a drag are the
+same press, and only the release tells them apart: release without moving and
+the piece stays selected for a click-to-move, release over a legal square and
+it lands there. Pointer release is bound to the window, so a piece dragged off
+the canvas and let go does not stay stuck to the cursor. Seven tests cover the
+gestures, including one on a board that is both scrolled and scaled.
+
+**The search runs in a Web Worker.** It is a synchronous tree walk that can run
+for seconds, and on the main thread the page could not repaint until it
+finished — your own move would not appear until the engine had replied. The
+engine has no DOM dependencies, so moving it off-thread was a message rather
+than a rewrite. The board now paints your move immediately and stays draggable
+while the engine thinks.
+
+## Earlier UI fixes
 
 Three bugs the original had, all found by actually playing it:
 

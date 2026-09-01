@@ -1,5 +1,36 @@
 var c = document.getElementById('mainCanvas');
 const TILE = 100;   // board square, in canvas pixels
+
+// Sprites are loaded once into this map. The original set img.src and drew
+// from an onload handler on *every* tile repaint, which made each square an
+// async image load: the piece landed a frame or more after the square did,
+// and a move repainted several tiles that way. Decoding once up front turns
+// drawing into a synchronous blit.
+const SPRITES = new Map();
+const SPRITE_FILES = ['wP','wN','wB','wR','wQ','wK','bP','bN','bB','bR','bQ','bK'];
+let spritesReady = false;
+
+function loadSprites() {
+  return Promise.all(SPRITE_FILES.map((name) => new Promise((done) => {
+    const path = `chess_pieces/${name}.svg`;
+    const img = new Image();
+    img.onload = () => { SPRITES.set(path, img); done(); };
+    img.onerror = () => done();          // a missing sprite draws as nothing
+    img.src = path;
+  })));
+}
+
+// Every state change asks for a frame instead of painting immediately, so a
+// move that touches four tiles still costs one redraw.
+let framePending = false;
+function requestRender() {
+  if (framePending || !spritesReady) return;
+  framePending = true;
+  requestAnimationFrame(() => {
+    framePending = false;
+    if (typeof game !== 'undefined' && game.board) game.board.render();
+  });
+}
 var ctx = c.getContext('2d');
 ctx.font = '20px Arial';
 
@@ -43,14 +74,20 @@ class Tile {
     this.state = newState;
   }
 
+  // Kept because the rest of the game calls it after every state change; it
+  // now asks for a frame rather than painting one tile out of band.
   draw() {
+    requestRender();
+  }
+
+  // Paint this square and whatever stands on it. `skipPiece` is set for the
+  // square a dragged piece came from, so the piece is not drawn twice.
+  paint(skipPiece) {
     ctx.fillStyle = this.colors[this.color];
-    ctx.fillRect(100*this.x, 100*this.y, 100, 100);
-    if (this.piece != null) {
-      this.img.onload = function(){
-        ctx.drawImage(this.img, 100*this.x, 100*this.y, 100, 100);
-      }.bind(this);
-      this.img.src = this.piece.getStr();
+    ctx.fillRect(TILE*this.x, TILE*this.y, TILE, TILE);
+    if (this.piece != null && !skipPiece) {
+      const img = SPRITES.get(this.piece.getStr());
+      if (img) ctx.drawImage(img, TILE*this.x, TILE*this.y, TILE, TILE);
     }
   }
 
@@ -67,6 +104,8 @@ class Tile {
   }
 
 
+  // Move indicators are drawn by Board.render from `currentMoves`, so that a
+  // full repaint cannot lose them. This paints one, and is called from there.
   showMove() {
     ctx.fillStyle = this.dotColors[this.color];
     if (this.piece == null) {
@@ -504,6 +543,7 @@ class Board {
     }
     this.focused = null;
     this.currentMoves = [];
+    this.drag = null;   // {tile, x, y, moved} while a piece is held
     this.whitePieces = new Set();
     this.blackPieces = new Set();
     this.whiteMoves = new Set();
@@ -721,6 +761,116 @@ class Board {
   }
 
   /**
+   * Repaint the whole board from state, in one pass, in this order:
+   * squares and pieces, then move indicators, then the dragged piece last so
+   * it floats above everything. Painting everything every frame is cheaper
+   * here than tracking dirty rectangles, and it cannot leave stale pixels.
+   */
+  render() {
+    const dragFrom = this.drag ? this.drag.tile : null;
+    for (var row = 0; row < 8; row++)
+      for (var col = 0; col < 8; col++) {
+        const tile = this.board[row][col];
+        tile.paint(tile === dragFrom);
+      }
+
+    for (var move of this.currentMoves) move.t2.showMove();
+
+    if (this.drag) {
+      const img = SPRITES.get(dragFrom.piece.getStr());
+      if (img) ctx.drawImage(img, this.drag.x - TILE/2, this.drag.y - TILE/2, TILE, TILE);
+    }
+  }
+
+  /** Canvas-pixel position of a pointer event, for dragging. */
+  canvasPos(e) {
+    const rect = c.getBoundingClientRect();
+    return [(e.clientX - rect.left) * (c.width / rect.width),
+            (e.clientY - rect.top) * (c.height / rect.height)];
+  }
+
+  /** Play the selected piece to (i, j) if that is one of its legal moves. */
+  tryMove(i, j) {
+    for (var move of this.currentMoves) {
+      if (this.board[i][j] == move.t2) {
+        for (var other of this.currentMoves) other.t2.clear();
+        this.currentMoves = [];
+        this.movePiece(move);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Select the piece on (i, j) and light up where it can go. */
+  select(i, j) {
+    this.deselect();
+    if (this.lastMove != null && this.lastMove.t1.isHighlighted()) {
+      this.lastMove.t2.clear();
+      this.lastMove.t1.clear();
+    }
+    this.focused = this.board[i][j];
+    this.board[i][j].highlight();
+    this.currentMoves = this.movesGrid[i][j];
+    requestRender();
+  }
+
+  deselect() {
+    for (var move of this.currentMoves) move.t2.clear();
+    this.currentMoves = [];
+    if (this.focused != null) this.focused.clear();
+    this.focused = null;
+  }
+
+  /**
+   * Press: complete a click-to-move if one is pending, otherwise pick up the
+   * piece under the cursor. Both interactions share this — a click and the
+   * start of a drag are the same gesture until the pointer moves.
+   */
+  pointerDown(e) {
+    const [i, j] = this.tileAt(e);
+    if (i < 0) { this.deselect(); requestRender(); return; }
+
+    if (this.focused != null && this.tryMove(i, j)) return;
+
+    const tile = this.board[i][j];
+    if (tile.piece != null && tile.piece.color == this.colors[this.turn]) {
+      if (this.focused === tile) { this.deselect(); requestRender(); return; }
+      this.select(i, j);
+      const [x, y] = this.canvasPos(e);
+      this.drag = { tile, x, y, moved: false };
+    } else {
+      this.deselect();
+    }
+    requestRender();
+  }
+
+  pointerMove(e) {
+    if (!this.drag) return;
+    const [x, y] = this.canvasPos(e);
+    this.drag.x = x; this.drag.y = y;
+    this.drag.moved = true;
+    requestRender();
+  }
+
+  /**
+   * Release: drop on a legal square, or — if the pointer never moved — leave
+   * the piece selected so click-to-move still works.
+   */
+  pointerUp(e) {
+    if (!this.drag) return;
+    const dragged = this.drag;
+    this.drag = null;
+
+    const [i, j] = this.tileAt(e);
+    if (i >= 0 && this.board[i][j] !== dragged.tile) {
+      if (this.tryMove(i, j)) return;
+      if (dragged.moved) this.deselect();   // dropped somewhere illegal
+    }
+    requestRender();
+  }
+
+  /**
    * Turn a click into board indices, or [-1, -1] if it missed the board.
    *
    * clientX/clientY are viewport coordinates, so three things have to be
@@ -743,56 +893,6 @@ class Board {
     // the end-of-game message and is not clickable.
     if (i < 0 || i > 7 || j < 0 || j > 7) return [-1, -1];
     return [i, j];
-  }
-
-  selectTile(e) {
-    const [i, j] = this.tileAt(e);
-    if (i < 0) return;
-    var moved = false
-    for (var move of this.currentMoves) {
-      if (!moved && this.board[i][j] == move.t2) {
-        this.movePiece(move);
-        var moved = true;
-      }
-      else
-        move.t2.clear();
-    }
-    this.currentMoves = [];
-    if (moved)
-      return;
-    if (this.board[i][j].piece == null || this.board[i][j].piece.color != this.colors[this.turn])
-      return;
-    if (this.lastMove != null && this.lastMove.t1.isHighlighted()) {
-      this.lastMove.t2.clear();
-      this.lastMove.t1.clear();
-    }
-    if (this.focused == this.board[i][j]) {
-      this.focused.clear();
-      this.focused = null;
-    }
-    else {
-      if (this.focused != null)
-        this.focused.clear();
-      this.focused = this.board[i][j];
-      this.board[i][j].highlight();
-
-      this.currentMoves = this.movesGrid[i][j];
-      for (var move of this.currentMoves) {
-        move.t2.showMove();
-      }
-    }
-    if (this.checked) {
-      if (this.turn == 0)
-        this.whiteKing.alert();
-      else
-        this.blackKing.alert();
-    }
-    else {
-      if (this.whiteKing.isAlerted())
-        this.whiteKing.clear();
-      if (this.blackKing.isAlerted())
-        this.blackKing.clear();
-    }
   }
 
   setupTile(i, j, s) {
@@ -844,7 +944,13 @@ class Board {
       }
     }
     this.update();
-    c.addEventListener('click', this.selectTile.bind(this));
+    // Pointer events rather than click: the same gesture has to serve both
+    // click-to-move and drag-and-drop, and only a press/move/release trio can
+    // tell them apart. Release is on the window so a piece dragged off the
+    // canvas and let go does not stay stuck to the cursor.
+    c.addEventListener('pointerdown', this.pointerDown.bind(this));
+    window.addEventListener('pointermove', this.pointerMove.bind(this));
+    window.addEventListener('pointerup', this.pointerUp.bind(this));
 
     // History keys listen on the document, not the canvas: bound to the canvas
     // they only fire once it has focus, and the only way to focus it is to
@@ -943,3 +1049,10 @@ class Game {
 var setupString = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR';
 // setupString = '8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8';
 game = new Game(setupString);
+
+// Nothing is painted until every sprite has decoded, so the first frame shows
+// a complete board rather than squares that fill in as images arrive.
+loadSprites().then(() => {
+  spritesReady = true;
+  game.board.render();
+});

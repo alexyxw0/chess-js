@@ -32,6 +32,8 @@ function loadGame() {
     },
     Image: class { set src(_) {} addEventListener() {} },
     Audio: class { play() {} load() {} cloneNode() { return this; } },
+    window: { addEventListener() {} },
+    requestAnimationFrame: (fn) => fn(),
     addEventListener() {},
     console,
   });
@@ -106,6 +108,8 @@ function boardWithCanvas(rect) {
     document: { getElementById: () => canvas, addEventListener() {}, activeElement: null },
     Image: class { set src(_) {} addEventListener() {} },
     Audio: class { play() {} load() {} cloneNode() { return this; } },
+    window: { addEventListener() {} },
+    requestAnimationFrame: (fn) => fn(),
     addEventListener() {}, console,
   });
   vm.runInContext(readFileSync(join(here, "..", "chess.js"), "utf8"), context);
@@ -144,7 +148,7 @@ test("the strip beside the board is not clickable", () => {
   // is undefined out there and reading .piece throws.
   const ui = boardWithCanvas(UNSCROLLED);
   assert.deepEqual(at(ui, 1000, 400), [-1, -1]);
-  assert.doesNotThrow(() => ui.selectTile({ clientX: 1000, clientY: 400 }));
+  assert.doesNotThrow(() => ui.pointerDown({ clientX: 1000, clientY: 400 }));
 });
 
 test("every square on the board round-trips", () => {
@@ -158,4 +162,93 @@ test("every square on the board round-trips", () => {
       assert.deepEqual(at(ui, clientX, clientY), [i, j], `square ${i},${j}`);
     }
   }
+});
+
+// ── drag and click, on the real board ───────────────────────────────────────
+//
+// A click and the start of a drag are the same press, and only the release
+// tells them apart. These drive press/move/release against the real chess.js
+// to check both gestures reach the same place.
+
+const SQ = (name) => {
+  const file = "abcdefgh".indexOf(name[0]);
+  const rank = Number(name[1]);
+  // canvas centre of that square, with the canvas at the origin, unscaled
+  return { clientX: file * 100 + 50, clientY: (8 - rank) * 100 + 50 };
+};
+
+test("click-to-move: press the piece, then press the destination", () => {
+  const ui = boardWithCanvas(UNSCROLLED);
+  ui.pointerDown(SQ("e2"));
+  ui.pointerUp(SQ("e2"));                 // released without moving: stays selected
+  assert.equal(ui.focused, ui.board[1][4], "e2 is selected");
+  assert.ok(ui.currentMoves.length > 0, "its moves are listed");
+
+  ui.pointerDown(SQ("e4"));
+  assert.equal(ui.moveList.length, 1, "the move was played");
+  assert.equal(ui.board[3][4].piece?.constructor.name, "Pawn", "pawn is on e4");
+  assert.equal(ui.board[1][4].piece, null, "e2 is empty");
+});
+
+test("drag-and-drop: press, move, release on the destination", () => {
+  const ui = boardWithCanvas(UNSCROLLED);
+  ui.pointerDown(SQ("d2"));
+  assert.ok(ui.drag, "a piece is held");
+  ui.pointerMove({ clientX: 350, clientY: 500 });
+  assert.ok(ui.drag.moved, "the pointer moved");
+  ui.pointerUp(SQ("d4"));
+
+  assert.equal(ui.drag, null, "the piece was let go");
+  assert.equal(ui.moveList.length, 1);
+  assert.equal(ui.board[3][3].piece?.constructor.name, "Pawn", "pawn is on d4");
+});
+
+test("dropping on an illegal square plays nothing and clears the selection", () => {
+  const ui = boardWithCanvas(UNSCROLLED);
+  ui.pointerDown(SQ("e2"));
+  ui.pointerMove({ clientX: 450, clientY: 150 });
+  ui.pointerUp(SQ("e7"));                 // a black pawn, not a legal target
+  assert.equal(ui.moveList.length, 0);
+  assert.equal(ui.focused, null);
+  assert.equal(ui.drag, null);
+});
+
+test("releasing off the board does not leave a piece stuck to the cursor", () => {
+  const ui = boardWithCanvas(UNSCROLLED);
+  ui.pointerDown(SQ("e2"));
+  ui.pointerMove({ clientX: 1100, clientY: 400 });
+  ui.pointerUp({ clientX: 1100, clientY: 400 });
+  assert.equal(ui.drag, null);
+  assert.equal(ui.moveList.length, 0);
+});
+
+test("an opponent piece cannot be picked up", () => {
+  const ui = boardWithCanvas(UNSCROLLED);
+  ui.pointerDown(SQ("e7"));               // black, on white's turn
+  assert.equal(ui.drag, null);
+  assert.equal(ui.focused, null);
+});
+
+test("pressing the selected piece again deselects it", () => {
+  const ui = boardWithCanvas(UNSCROLLED);
+  ui.pointerDown(SQ("e2"));
+  ui.pointerUp(SQ("e2"));
+  assert.equal(ui.focused, ui.board[1][4]);
+  ui.pointerDown(SQ("e2"));
+  assert.equal(ui.focused, null);
+  assert.equal(ui.currentMoves.length, 0);
+});
+
+test("a drag works when the canvas is scrolled and scaled", () => {
+  const ui = boardWithCanvas({ left: 20, top: -280, width: 600, height: 400 });
+  const at = (name) => {
+    const file = "abcdefgh".indexOf(name[0]), rank = Number(name[1]);
+    return { clientX: 20 + (file * 100 + 50) * 0.5,
+             clientY: -280 + ((8 - rank) * 100 + 50) * 0.5 };
+  };
+  ui.pointerDown(at("g1"));
+  ui.pointerMove(at("f3"));
+  ui.pointerUp(at("f3"));
+  assert.equal(ui.moveList.length, 1);
+  assert.equal(ui.board[2][5].piece?.constructor.name, "Knight");
 });

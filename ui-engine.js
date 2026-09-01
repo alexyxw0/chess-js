@@ -29,9 +29,15 @@ for (const radio of document.querySelectorAll("input[name=mode]")) {
   });
 }
 
-hintButton.addEventListener("click", () => {
-  const thought = think(window.game.board, options());
-  say(thought === null ? "No legal moves." : describe(thought, "Suggestion"));
+hintButton.addEventListener("click", async () => {
+  hintButton.disabled = true;
+  say("Thinking\u2026");
+  try {
+    const thought = await think(window.game.board, options());
+    say(thought === null ? "No legal moves." : describe(thought, "Suggestion"));
+  } finally {
+    hintButton.disabled = false;
+  }
 });
 
 function say(text) { statusEl.textContent = text; }
@@ -69,19 +75,25 @@ function describe(thought, label) {
   ].filter(Boolean).join("\n");
 }
 
-function maybeMove() {
-  const ui = window.game?.board;
-  if (!ui || engineSide === null || ui.turn !== engineSide) return;
+let thinking = false;
 
-  say("Thinking…");
-  // Yield a frame so the "Thinking…" paint lands before the search blocks.
-  // The search is synchronous; a Web Worker would be the real fix, and at these
-  // depths it has not been worth the message-passing.
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    const thought = playEngineMove(ui, options());
+async function maybeMove() {
+  const ui = window.game?.board;
+  if (!ui || thinking || engineSide === null || ui.turn !== engineSide) return;
+
+  thinking = true;
+  say("Thinking\u2026");
+  try {
+    // The search runs in a worker, so this await does not block the board: your
+    // own move is already painted and the pieces stay draggable while it thinks.
+    const thought = await playEngineMove(ui, options());
     say(thought === null ? "No legal moves — the game is over."
                          : describe(thought, "Played"));
-  }));
+  } catch (error) {
+    say(`Engine error: ${error.message}`);
+  } finally {
+    thinking = false;
+  }
 }
 
 // chess.js owns the click handling and has no move event, so wrap movePiece to
@@ -91,7 +103,10 @@ const original = window.game.board.movePiece.bind(window.game.board);
 window.game.board.movePiece = function (move) {
   original(move);
   showTurn();
-  maybeMove();
+  // Let the board paint your move before the engine is asked for a reply.
+  // The search is off-thread now, but the request itself still has to wait for
+  // a frame or the "Thinking…" line and the moved piece land together.
+  requestAnimationFrame(() => maybeMove());
 };
 
 // History keys rewind the position without going through movePiece, so the
