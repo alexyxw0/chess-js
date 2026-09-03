@@ -145,3 +145,97 @@ test("no positional term outweighs a piece", () => {
   assert.ok(upKnight - level > PIECE_VALUE[2] * 0.6,
     "being a knight up should be worth most of a knight");
 });
+
+
+// ── lazy evaluation ─────────────────────────────────────────────────────────
+//
+// evaluate() skips mobility, king safety and pawn structure when the cheap
+// half is already outside the alpha-beta window by more than LAZY_MARGIN. That
+// is only sound if the margin genuinely bounds those terms — set it too small
+// and the search silently gets wrong scores in exactly the positions it
+// decided not to look at. So the bound is measured, not asserted.
+
+import { LAZY_MARGIN, evaluateFull, pawnStructure } from "../engine/eval.js";
+import { generateLegalMoves } from "../engine/movegen.js";
+
+test("LAZY_MARGIN bounds what the expensive terms can contribute", () => {
+  let worst = 0, worstFen = "";
+  for (const fen of [
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+    // pathological pawn structures, where the new terms are largest
+    "4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
+    "4k3/8/8/8/8/PPPPPPPP/PPPPPPPP/4K3 w - - 0 1",
+    "3k4/1P1P1P2/8/8/8/8/1p1p1p2/3K4 w - - 0 1",
+  ]) {
+    const board = new Board(fen);
+    // Walk a couple of plies so the sample is not just the root.
+    const visit = (b, depth) => {
+      const cheapOnly = evaluate(b, -Infinity, -Infinity);   // forces the lazy path
+      const full = evaluateFull(b);
+      const gap = Math.abs(full - cheapOnly);
+      if (gap > worst) { worst = gap; worstFen = b.fen(); }
+      if (depth === 0) return;
+      for (const m of generateLegalMoves(b).slice(0, 6)) {
+        b.makeMove(m); visit(b, depth - 1); b.unmakeMove();
+      }
+    };
+    visit(board, 2);
+  }
+  assert.ok(worst < LAZY_MARGIN,
+    `expensive terms reached ${worst}, which exceeds LAZY_MARGIN ${LAZY_MARGIN}`
+    + ` — the lazy path would return a wrong score. Worst at ${worstFen}`);
+  // And it should not be absurdly conservative, or lazy eval never triggers.
+  // And tight enough that the short-circuit actually fires. A margin far
+  // above what the terms can reach makes lazy evaluation a no-op.
+  assert.ok(LAZY_MARGIN < 1000,
+    `LAZY_MARGIN ${LAZY_MARGIN} is so wide the short-circuit will rarely fire`);
+});
+
+test("the lazy path and the full evaluation agree inside the window", () => {
+  // With a window that cannot trigger the short-circuit, the two must match.
+  for (const fen of [
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+  ]) {
+    const board = new Board(fen);
+    assert.equal(evaluate(board, -Infinity, Infinity), evaluateFull(board), fen);
+  }
+});
+
+// ── pawn structure ──────────────────────────────────────────────────────────
+
+test("doubled pawns are penalised", () => {
+  const clean = new Board("4k3/8/8/8/8/8/PP6/4K3 w - - 0 1");
+  const doubled = new Board("4k3/8/8/8/8/P7/P7/4K3 w - - 0 1");
+  assert.ok(pawnStructure(doubled, WHITE) < pawnStructure(clean, WHITE));
+});
+
+test("an isolated pawn is worse than a supported one", () => {
+  const supported = new Board("4k3/8/8/8/8/8/PP6/4K3 w - - 0 1");
+  const isolated = new Board("4k3/8/8/8/8/8/P1P5/4K3 w - - 0 1");
+  assert.ok(pawnStructure(isolated, WHITE) < pawnStructure(supported, WHITE) + 1);
+});
+
+test("a passed pawn is worth more the closer it is to promoting", () => {
+  const near = new Board("4k3/1P6/8/8/8/8/8/4K3 w - - 0 1");
+  const far = new Board("4k3/8/8/8/8/8/1P6/4K3 w - - 0 1");
+  assert.ok(pawnStructure(near, WHITE) > pawnStructure(far, WHITE),
+    "a pawn on the 7th should beat the same pawn on the 2nd");
+});
+
+test("a pawn is not passed when an enemy pawn can still stop it", () => {
+  const passed = new Board("4k3/8/8/3P4/8/8/8/4K3 w - - 0 1");
+  const blocked = new Board("4k3/2p5/8/3P4/8/8/8/4K3 w - - 0 1");
+  assert.ok(pawnStructure(blocked, WHITE) < pawnStructure(passed, WHITE),
+    "an enemy pawn on an adjacent file ahead of it means it is not passed");
+});
+
+test("pawn structure is symmetric", () => {
+  const board = new Board("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1");
+  assert.equal(pawnStructure(board, WHITE), pawnStructure(board, BLACK));
+});

@@ -24,13 +24,26 @@ const MAX_PLY = 64;
 // does not shuffle. Carried over from the Corner Case engine this follows.
 const REP_PENALTY = 200;
 const MAX_KILLERS = 5;
+
+// Late move reductions. Move ordering already causes a cutoff on the first
+// move 77-95% of the time, which means moves late in the list are very
+// unlikely to be best — so search them shallower and only pay full depth if
+// one surprises us. The payoff scales with ordering quality, which is why this
+// is the highest-value search addition here rather than a marginal one.
+// Measured, not chosen: at LMR_MIN_DEPTH 3 a depth-4 search reduced the key
+// move of a mate in two to a 2-ply search, which cannot see a mate needing 3,
+// and the engine played something else. Shallow searches are left exact.
+const LMR_MIN_DEPTH = 5;
+const LMR_MIN_MOVES = 3;    // the first few moves are searched in full
 const EMPTY_KILLERS = new Set();
 
 export class Search {
   // 2**18 entries. Measured: at 2**16 a depth-7 search fills and wipes the
   // table one to two times, which costs ~20% in both nodes and wall clock.
   // Nothing further is gained past 2**18 on these positions.
-  constructor({ maxDepth = 4, timeLimitMs = Infinity, ttSize = 1 << 18 } = {}) {
+  constructor({ maxDepth = 4, timeLimitMs = Infinity, ttSize = 1 << 18,
+                lmr = true } = {}) {
+    this.lmr = lmr;
     this.maxDepth = maxDepth;
     this.timeLimitMs = timeLimitMs;
     this.ttSize = ttSize;
@@ -59,6 +72,8 @@ export class Search {
     this.ttCutoffs = 0;      // ...and it was deep enough to return immediately
     this.cutoffs = 0;        // beta cutoffs
     this.firstMoveCutoffs = 0; // ...where the very first move searched caused it
+    this.reductions = 0;     // moves searched at reduced depth
+    this.reSearches = 0;     // ...that then had to be searched in full
   }
 
   /**
@@ -105,6 +120,8 @@ export class Search {
         ttCutoffs: this.ttCutoffs,
         cutoffs: this.cutoffs,
         firstMoveCutoffs: this.firstMoveCutoffs,
+        reductions: this.reductions,
+        reSearches: this.reSearches,
       },
       pv: best === null ? [] : this.principalVariation(board, reached || 1),
       elapsedMs: Date.now() - started,
@@ -141,15 +158,45 @@ export class Search {
     const moves = this.orderMoves(board, generateMoves(board), entry?.move ?? 0, depth);
 
     let best = -INFINITY, bestMove = 0, legalCount = 0;
+    // Reducing while in check would prune the escape squares.
+    const inCheck = board.inCheck();
 
     for (const move of moves) {
+      const quiet = !moveCaptured(move) && !(moveFlags(move) & FLAG_PROMO);
       board.makeMove(move);
       if (board.isAttacked(board.kingSquare[board.side ^ 1], board.side)) {
         board.unmakeMove();
         continue;
       }
       legalCount++;
-      const score = -this.negamax(board, depth - 1, -beta, -alpha, ply + 1);
+
+      let score;
+      const reduce = this.lmr
+        && quiet
+        && !inCheck
+        && depth >= LMR_MIN_DEPTH
+        && legalCount > LMR_MIN_MOVES
+        // Killers are quiet moves already known to refute something at this
+        // depth. Reducing them throws away the one piece of evidence the
+        // search has that a quiet move matters.
+        && !this.killers[depth].has(move)
+        && !board.inCheck();          // and the move does not give check
+
+      if (reduce) {
+        // Deeper searches and later moves get reduced harder.
+        const r = Math.min(depth - 2,
+                           1 + Math.floor(Math.log(depth) * Math.log(legalCount) / 2));
+        this.reductions++;
+        // A null window: we only care whether it can beat alpha at all.
+        score = -this.negamax(board, depth - 1 - r, -alpha - 1, -alpha, ply + 1);
+        if (score > alpha) {
+          // It surprised us, so pay for the real search.
+          this.reSearches++;
+          score = -this.negamax(board, depth - 1, -beta, -alpha, ply + 1);
+        }
+      } else {
+        score = -this.negamax(board, depth - 1, -beta, -alpha, ply + 1);
+      }
       board.unmakeMove();
 
       if (score > best) { best = score; bestMove = move; }
@@ -203,7 +250,9 @@ export class Search {
     this.qnodes++;
 
     const inCheck = board.inCheck();
-    let best = evaluate(board);
+    // The window lets evaluate() skip its expensive half when this position
+    // is already far outside it — which is most quiescence leaves.
+    let best = evaluate(board, alpha, beta);
 
     // Standing pat means "I could just decline to capture" — but in check that
     // is not an option, so the score has to come from actually searching the
@@ -215,7 +264,7 @@ export class Search {
     } else {
       best = -INFINITY;
     }
-    if (ply >= MAX_PLY - 1) return inCheck ? evaluate(board) : best;
+    if (ply >= MAX_PLY - 1) return inCheck ? evaluate(board, alpha, beta) : best;
 
     // In check, every legal move is a candidate; otherwise only captures.
     const moves = this.orderMoves(
